@@ -1,0 +1,111 @@
+name: Build Vnets
+parameters:
+  - name: environments
+    values:
+      - dev
+  - name: choose_rg
+    displayName: "Choose Hub/Spoke"
+    values:
+      -  HUB
+      -  KFL
+      -  KFS
+      -  DATA
+
+resources:
+  repositories:
+    - repository: kfterraformrepo
+      type: github
+      endpoint: github_connection
+      ref: release_ado
+      name: rajagopalanrg/kfterraformrepo
+      
+
+trigger: none
+
+jobs:
+- job: terraform
+  displayName: Build Hub
+  variables:
+    ${{ if eq(parameters['choose_rg'], 'Hub') }}:
+      workingDir: 'spokes/HUB'
+    ${{ if eq(parameters['choose_rg'], 'KFL') }}:
+      workingDir: 'spokes/KFL'
+    ${{ if eq(parameters['choose_rg'], 'KFS') }}:
+      workingDir: 'spokes/KFS'
+      ${{ if eq(parameters['choose_rg'], 'DATA') }}:
+        workingDir: 'spokes/Data'
+
+  pool:
+    vmImage: ubuntu-latest
+
+  steps:
+  - task: AzureCLI@2
+    displayName: 'get sequences'
+    inputs:
+      azureSubscription: newspn
+      scriptType: pscore
+      scriptPath: calcsequence.ps1
+      arguments: '-spoke ${{ parameters.choose_rg }}'
+    enabled: true
+    env:
+      AZURE_STORAGE_ACCOUNT: $(storage_name)
+      AZURE_STORAGE_KEY: $(storage_key)
+
+  - task: CmdLine@2
+    displayName: "get pipeline variable"
+    inputs:
+      script: 'echo $(nextIP)'
+    enabled: false
+
+  - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@0
+    displayName: 'Install Terraform'
+    inputs:
+      terraformVersion: '0.14.0'
+
+  - task: TerraformTaskV1@0
+    displayName: 'init'
+    inputs:
+      provider: 'azurerm'
+      command: 'init'
+      workingDirectory: $(workingDir)
+      backendServiceArm: $(devOps_spn)
+      backendAzureRmResourceGroupName: $(devOps_rg)
+      backendAzureRmStorageAccountName: $(storage_name)
+      backendAzureRmContainerName: $(devOps_cont)
+      backendAzureRmKey: '${{ parameters.choose_rg }}-${{ parameters.environments }}_$(nextEnvSeq)-state.tfstate'
+    enabled: true
+
+  - task: TerraformTaskV1@0
+    displayName: 'plan'
+    inputs:
+      provider: 'azurerm'
+      command: 'plan'
+      commandOptions: '-out=tfplan -var="environment_name=${{ parameters.environments }}" -var="vnet_address_space=$(nextIP)" -var="env_seq=$(nextEnvSeq)"'
+      workingDirectory: $(workingDir)
+      environmentServiceNameAzureRM: 'newspn'
+    enabled: true
+
+  - task: TerraformTaskV1@0
+    displayName: 'apply'
+    inputs:
+      provider: 'azurerm'
+      command: apply
+      commandOptions: '-var="environment_name=${{ parameters.environments }}" -var="vnet_address_space=$(nextIP)" -var="env_seq=$(nextEnvSeq)"'
+      workingDirectory: $(workingDir)
+      environmentServiceNameAzureRM: 'newspn'
+    enabled: true
+  
+  - task: AzureCLI@2
+    displayName: 'update sequences'
+    inputs:
+      azureSubscription: newspn
+      scriptType: pscore
+      scriptLocation: inlineScript
+      inlineScript: |
+        az storage entity insert --entity PartitionKey='ipsequences' RowKey=$(nextIPRowKey) seq=$(nextIPSeq) --if-exists fail --table-name kfsequence
+        az storage entity insert --entity PartitionKey=$(envPartitionKey) RowKey=$(nextEnvRowKey) seq=$(nextEnvSeq) --if-exists fail --table-name kfsequence
+      arguments: ''
+    enabled: true
+    env:
+      AZURE_STORAGE_ACCOUNT: $(storage_name)
+      AZURE_STORAGE_KEY: $(storage_key)
