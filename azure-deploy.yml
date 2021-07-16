@@ -20,7 +20,7 @@ resources:
       type: github
       endpoint: github_connection
       ref: master
-      name: VivekChaturvedi20/dOps-main
+      name: Build-pipeline-resource-creation
       
 trigger: none
 
