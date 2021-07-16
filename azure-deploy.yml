@@ -91,7 +91,7 @@ jobs:
   - script: 'terraform apply --auto-approve -var="environment_name=${{ parameters.environments }}" -var="vnet_address_space=$(nextIP)" -var="env_seq=$(nextEnvSeq)"'
     workingDirectory: $(workingDir)
     displayName: 'Terraform apply'
-    enabled: true
+    enabled: false
     env:
       ARM_CLIENT_ID: $(arm_client_id)
       ARM_CLIENT_SECRET: $(arm_client_secret)
