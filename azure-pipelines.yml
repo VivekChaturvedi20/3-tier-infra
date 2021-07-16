@@ -13,11 +13,11 @@ parameters:
 
 resources:
   repositories:
-    - repository: kfterraformrepo
+    - repository: VivekChaturvedi20
       type: github
       endpoint: github_connection
       ref: release_ado
-      name: rajagopalanrg/kfterraformrepo
+      name: vivek/VivekChaturvedi20
       
 
 trigger: none
