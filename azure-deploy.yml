@@ -20,7 +20,7 @@ resources:
       type: github
       endpoint: github_connection
       ref: master
-      name: github.com_VivekChaturvedi20
+      name: VivekChaturvedi20
       
 trigger: none
 
