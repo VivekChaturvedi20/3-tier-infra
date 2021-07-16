@@ -16,11 +16,11 @@ parameters:
 
 resources:
   repositories:
-    - repository: devOps
+    - repository: dOps-main
       type: github
       endpoint: github_connection
-      ref: main
-      name: HayGroup/devOps
+      ref: master
+      name: VivekChaturvedi20/dOps-main
       
 trigger: none
 
