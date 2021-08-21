@@ -1,4 +1,4 @@
-name: Build Vnets
+name: Build Vnetss
 parameters:
   - name: environments
     values:
