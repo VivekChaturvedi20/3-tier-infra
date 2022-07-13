@@ -1,0 +1,1 @@
+curl -s -H Metadata:true --noproxy "*" "http://public_ip_of_the_vm/metadata/instance?api-version=2021-02-01" | jq >> mytest.json
