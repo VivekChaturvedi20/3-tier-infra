@@ -1,0 +1,2102 @@
+  terraform {
+
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "=3.3.0"
+    }
+  }
+  backend "azurerm" {}
+}
+provider "azurerm" {
+  features {}
+  storage_use_azuread = true
+}
+
+#[Organization]-[Environment]-[Region]-[Domain*]-[Type][*Index/purpose]
+
+locals {
+  env_tag                        = join("_", [var.environment_name, var.dom])
+  resource_prefix                = join("-", [var.org, var.environment_name, var.reg, var.dom])
+  backend_address_pool_name      = join("-", [var.org, var.environment_name, var.reg, var.dom, "backend"])
+  frontend_port_name             = join("-", [var.org, var.environment_name, var.reg, var.dom, "http"])
+  frontend_ip_configuration_name = join("-", [var.org, var.environment_name, var.reg, var.dom, "http-ip"])
+  http_setting_name              = join("-", [var.org, var.environment_name, var.reg, var.dom, "http-settings"])
+  listener_name                  = join("-", [var.org, var.environment_name, var.reg, var.dom, "listener"])
+  request_routing_rule_name      = join("-", [var.org, var.environment_name, var.reg, var.dom, "rule"])
+
+}
+
+
+# Resource group {Network & Pass}
+
+resource "azurerm_resource_group" "KFNetworkRsg" {
+  location = var.location
+  name     = join("-", [local.resource_prefix, "rg-nw"])
+  tags = {
+
+    "ResourceType (new)"    = "App"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+
+  }
+}
+
+resource "azurerm_resource_group" "Rg_paas" {
+  location = var.location
+  name     = join("-", [local.resource_prefix, "rg-paas"])
+  tags = {
+
+    "ResourceType (new)"    = "App"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+
+  }
+}
+
+resource "azurerm_resource_group" "agentrg" {
+  name     = join("-", [local.resource_prefix, "rg-ops"])
+  location = var.location
+
+  tags = {
+
+    "ResourceType (new)"    = "App"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+}
+
+resource "azurerm_virtual_network" "kfsvnet" {
+  name                = join("-", [local.resource_prefix, "vnet"])
+  location            = var.location
+  resource_group_name = azurerm_resource_group.KFNetworkRsg.name
+  address_space       = [var.KFS_vnet_address_space_1]
+  depends_on          = [azurerm_resource_group.KFNetworkRsg]
+  tags = {
+
+    "ResourceType (new)"    = "Networking"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+}
+
+
+
+resource "azurerm_subnet" "aks_sbnt" {
+  name                                           = join("-", [local.resource_prefix, "snet-aks"])
+  resource_group_name                            = azurerm_resource_group.KFNetworkRsg.name
+  virtual_network_name                           = azurerm_virtual_network.kfsvnet.name
+  address_prefixes                               = [var.KFS_subnet_address_space_aks]
+  enforce_private_link_endpoint_network_policies = true
+  depends_on = [azurerm_resource_group.KFNetworkRsg,
+  azurerm_virtual_network.kfsvnet]
+  service_endpoints = ["Microsoft.Sql", "Microsoft.ContainerRegistry", "Microsoft.Storage", "Microsoft.KeyVault", "Microsoft.ServiceBus"]
+}
+
+output "subnet_aks_id" {
+  value = azurerm_subnet.aks_sbnt.id
+}
+
+
+resource "azurerm_subnet" "ops_sbnt" {
+  name                                           = join("-", [local.resource_prefix, "snet-ops"])
+  resource_group_name                            = azurerm_resource_group.KFNetworkRsg.name
+  virtual_network_name                           = azurerm_virtual_network.kfsvnet.name
+  address_prefixes                               = [var.KFS_subnet_address_space_ops]
+  enforce_private_link_endpoint_network_policies = true
+  depends_on = [azurerm_resource_group.KFNetworkRsg,
+  azurerm_virtual_network.kfsvnet]
+  service_endpoints = ["Microsoft.Sql", "Microsoft.ContainerRegistry", "Microsoft.Storage", "Microsoft.KeyVault", "Microsoft.ServiceBus"]
+}
+
+
+output "subnet_ops_id" {
+  value = azurerm_subnet.ops_sbnt.id
+}
+
+resource "azurerm_subnet" "paas_sbnt" {
+  name                                           = join("-", [local.resource_prefix, "snet-paas"])
+  resource_group_name                            = azurerm_resource_group.KFNetworkRsg.name
+  virtual_network_name                           = azurerm_virtual_network.kfsvnet.name
+  address_prefixes                               = [var.KFS_subnet_address_space_paas]
+  enforce_private_link_endpoint_network_policies = true
+  depends_on = [azurerm_resource_group.KFNetworkRsg,
+  azurerm_virtual_network.kfsvnet]
+  service_endpoints = ["Microsoft.Sql", "Microsoft.ContainerRegistry", "Microsoft.Storage", "Microsoft.KeyVault", "Microsoft.ServiceBus"]
+}
+output "subnet_pass_id" {
+  value = azurerm_subnet.paas_sbnt.id
+}
+
+resource "azurerm_subnet" "apg_sbnt" {
+  name                                           = join("-", [local.resource_prefix, "snet-agw"])
+  resource_group_name                            = azurerm_resource_group.KFNetworkRsg.name
+  virtual_network_name                           = azurerm_virtual_network.kfsvnet.name
+  address_prefixes                               = [var.KFS_subnet_address_space_agw]
+  enforce_private_link_endpoint_network_policies = true
+  depends_on = [azurerm_resource_group.KFNetworkRsg,
+  azurerm_virtual_network.kfsvnet]
+  service_endpoints = ["Microsoft.Sql", "Microsoft.ContainerRegistry", "Microsoft.Storage", "Microsoft.KeyVault", "Microsoft.ServiceBus"]
+}
+
+output "subnet_agw_id" {
+  value = azurerm_subnet.apg_sbnt.id
+}
+
+
+resource "azurerm_subnet" "AzureBastionSubnet" {
+  name                                           = "AzureBastionSubnet"
+  resource_group_name                            = azurerm_resource_group.KFNetworkRsg.name
+  virtual_network_name                           = azurerm_virtual_network.kfsvnet.name
+  address_prefixes                               = [var.AzureBastionSubnet_address_space]
+  enforce_private_link_endpoint_network_policies = true
+  depends_on                                     = [azurerm_resource_group.KFNetworkRsg, azurerm_virtual_network.kfsvnet]
+  service_endpoints                              = ["Microsoft.Sql", "Microsoft.ContainerRegistry", "Microsoft.Storage", "Microsoft.KeyVault", "Microsoft.ServiceBus"]
+}
+
+output "subnet_bastion_id" {
+  value = azurerm_subnet.AzureBastionSubnet.id
+}
+
+
+# public ip for bastion : ==========
+
+
+resource "azurerm_public_ip" "BastionPIP" {
+  allocation_method   = "Static"
+  location            = var.location
+  resource_group_name = azurerm_resource_group.agentrg.name
+  name                = join("-", [local.resource_prefix, "pip-bastion"])
+  sku                 = "Standard"
+  tags = {
+
+    "ResourceType (new)"    = "Networking"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+}
+
+# Agent VM creation :
+
+
+# Create network interface
+resource "azurerm_network_interface" "agent-nic" {
+  name                = join("-", [var.org, "agent-nic"])
+  location            = var.location
+  resource_group_name = azurerm_resource_group.agentrg.name
+
+  ip_configuration {
+    name                          = "AgentNicConfiguration"
+    subnet_id                     = azurerm_subnet.ops_sbnt.id
+    private_ip_address_allocation = "Static"
+
+    # Kindly assign ip to VM in the OPS subnet range IP (need to be modified)
+    private_ip_address = var.private_ip_address
+  }
+}
+
+# Create storage account for boot diagnostics
+
+
+resource "azurerm_storage_account" "agentstorage" {
+  name                      = join("", [var.org, var.environment_name, var.reg, var.dom, "stgvm"])
+  resource_group_name       = azurerm_resource_group.agentrg.name
+  location                  = var.location
+  account_tier              = "Standard"
+  account_replication_type  = "LRS"
+  #allow_blob_public_access  = true
+  allow_nested_items_to_be_public  = true
+  shared_access_key_enabled = true
+  tags = {
+
+    "ResourceType (new)"    = "Storage"
+    "environment"           = var.environment_name
+
+  }
+  network_rules {
+    default_action = "Allow"
+  }
+  lifecycle {
+    prevent_destroy = false
+  }
+}
+
+# Create virtual machine
+
+
+resource "azurerm_linux_virtual_machine" "agent_vm" {
+  name                = join("-", [var.environment_name, "agent-vm"])
+  location            = var.location
+  resource_group_name = azurerm_resource_group.agentrg.name
+  network_interface_ids = [azurerm_network_interface.agent-nic.id]
+  size = "Standard_D2s_v3"
+  #secure_boot_enabled = True
+  #vtpm_enabled = True
+
+
+  os_disk {
+    name                 = "myOsDisk"
+    caching              = "ReadWrite"
+    storage_account_type = "StandardSSD_LRS"
+  }
+
+  source_image_reference {
+    publisher = "Canonical"
+    offer     = "0001-com-ubuntu-server-focal"
+    sku       = "20_04-lts-gen2"
+    version   = "latest"
+  }
+
+  computer_name                   = var.computername
+  admin_username                  = var.username
+  admin_password                  = var.vm_password
+  disable_password_authentication = false
+
+  boot_diagnostics {
+    storage_account_uri = azurerm_storage_account.agentstorage.primary_blob_endpoint
+  }
+
+  tags = {
+
+    "ResourceType (new)"    = "App"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+}
+
+
+resource "azurerm_log_analytics_workspace" "workspace-agent-OMS" {
+  location            = var.location
+  name                = join("-", [local.resource_prefix, "agent-oms"])
+  resource_group_name = azurerm_resource_group.agentrg.name
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+    "Cost Center"           = "US21GPS"
+
+  }
+  sku               = "PerGB2018"
+  retention_in_days = 365
+}
+
+
+output "workspaceId" {
+  value = azurerm_log_analytics_workspace.workspace-agent-OMS.workspace_id
+}
+output "workspaceKey" {
+  value     = azurerm_log_analytics_workspace.workspace-agent-OMS.primary_shared_key
+  sensitive = true
+}
+
+
+resource "azurerm_virtual_machine_extension" "devops_agent" {
+  name                 = "ext-devops"
+  virtual_machine_id   = azurerm_linux_virtual_machine.agent_vm.id
+  publisher            = "Microsoft.Azure.Extensions"
+  type                 = "CustomScript"
+  type_handler_version = "2.0"
+
+  settings = <<SETTINGS
+    {
+        "fileUris": ["https://kfsprduekfsgtfstate.blob.core.windows.net/extension/extension.sh?sp=r&st=2022-06-30T11:41:47Z&se=2023-05-05T19:41:47Z&spr=https&sv=2021-06-08&sr=b&sig=5FqNROXOpZMGLvLSIYUCSio6S87fOBR2SmYL%2FFvy8TQ%3D"],
+        "commandToExecute": "sh extension.sh"
+    }
+SETTINGS
+
+  depends_on = [
+    azurerm_linux_virtual_machine.agent_vm
+  ]
+}
+
+
+
+# Backup VM creation :
+
+
+# Create network interface
+resource "azurerm_network_interface" "backup-nic" {
+  name                = join("-", [var.org, "backupvm-nic"])
+  location            = var.location
+  resource_group_name = azurerm_resource_group.agentrg.name
+
+  ip_configuration {
+    name                          = "AgentNicConfiguration"
+    subnet_id                     = azurerm_subnet.ops_sbnt.id
+    private_ip_address_allocation = "Static"
+
+    # Kindly assign ip to VM in the OPS subnet range IP (need to be modified)
+    private_ip_address = var.backupvm_private_ip_address
+  }
+}
+
+# Create storage account for boot diagnostics
+
+
+resource "azurerm_storage_account" "backupvmstorage" {
+  name                      = join("", [var.org, var.environment_name, var.reg, var.dom, "stgbcvm"])
+  resource_group_name       = azurerm_resource_group.agentrg.name
+  location                  = var.location
+  account_tier              = "Standard"
+  account_replication_type  = "LRS"
+  #allow_blob_public_access  = true
+  allow_nested_items_to_be_public  = true
+  shared_access_key_enabled = true
+  tags = {
+
+    "ResourceType (new)"    = "Storage"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+    "Cost Center"           = "US21GPS"
+
+  }
+  network_rules {
+    default_action = "Allow"
+  }
+  lifecycle {
+    prevent_destroy = false
+  }
+}
+
+# Create virtual machine
+
+
+resource "azurerm_linux_virtual_machine" "backup_vm" {
+  name                = join("-", [var.environment_name, "backup-vm"])
+  location            = var.location
+  resource_group_name = azurerm_resource_group.agentrg.name
+  network_interface_ids = [azurerm_network_interface.backup-nic.id]
+  size = "Standard_D2s_v3"
+  #secure_boot_enabled = True
+  #vtpm_enabled = True
+
+
+  os_disk {
+    name                 = "bckOsDisk"
+    caching              = "ReadWrite"
+    storage_account_type = "StandardSSD_LRS"
+  }
+
+  source_image_reference {
+    publisher = "Canonical"
+    offer     = "0001-com-ubuntu-server-focal"
+    sku       = "20_04-lts-gen2"
+    version   = "latest"
+  }
+
+  computer_name                   = var.backupvm
+  admin_username                  = var.username
+  admin_password                  = var.vm_password
+  disable_password_authentication = false
+
+  boot_diagnostics {
+    storage_account_uri = azurerm_storage_account.backupvmstorage.primary_blob_endpoint
+  }
+
+  tags = {
+
+    "ResourceType (new)"    = "App"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+    "Cost Center"           = "US21GPS"
+
+  }
+}
+
+
+#=========================================================
+
+
+# Here onwards everything needs to be uncommented while running self-hosted pipeline .
+
+
+# Pass Resource group of the user assigned identity and its name below
+
+
+resource "azurerm_user_assigned_identity" "Usr_identity" {
+  resource_group_name = azurerm_resource_group.KFNetworkRsg.name
+  location            = var.location
+  name = join("-", ["mi", var.org, var.environment_name])
+}
+
+output "id" {
+  value = azurerm_resource_group.KFNetworkRsg
+}
+
+output "uai_client_id" {
+  value = azurerm_user_assigned_identity.Usr_identity.client_id
+}
+
+output "uai_principal_id" {
+  value = azurerm_user_assigned_identity.Usr_identity.principal_id
+}
+
+
+#============Role assignment
+
+data "azurerm_subscription" "primary" {
+}
+
+
+resource "azurerm_role_assignment" "acrpull-role" {
+  principal_id                     = data.azurerm_client_config.current.object_id
+  role_definition_name             = "AcrPull"
+  #scope                            = azurerm_container_registry.acr.id
+  scope                            = data.azurerm_subscription.primary.id
+  skip_service_principal_aad_check = true
+}
+
+
+
+resource "azurerm_role_assignment" "mid-acrpull-role" {
+  principal_id                     = azurerm_user_assigned_identity.Usr_identity.principal_id
+  role_definition_name             = "AcrPull"
+  scope                            = data.azurerm_subscription.primary.id
+  skip_service_principal_aad_check = true
+}
+
+resource "azurerm_role_assignment" "mid-reader-role" {
+  principal_id                     = azurerm_user_assigned_identity.Usr_identity.principal_id
+  role_definition_name             = "Reader"
+  scope                            = azurerm_key_vault.AKV_Cert.id
+  skip_service_principal_aad_check = true
+}
+
+
+resource "azurerm_role_assignment" "appconfig-reader-role" {
+  principal_id                     = "8e6a168b-1c93-4e9b-b2ec-20606e9b5c03"
+  role_definition_name             = "App Configuration Data Reader"
+  scope                            = data.azurerm_subscription.primary.id
+  skip_service_principal_aad_check = true
+}
+
+resource "azurerm_role_assignment" "stgblob-runtimespn-role" {
+  principal_id                     = "8e6a168b-1c93-4e9b-b2ec-20606e9b5c03"
+  role_definition_name             = "Storage Blob Data Contributor"
+  scope                            = data.azurerm_subscription.primary.id
+  skip_service_principal_aad_check = true
+}
+
+
+#=====================NSG Details
+
+
+
+resource "azurerm_network_security_group" "KFAKSNSG" {
+  name                = join("-", [local.resource_prefix, "nsg-aks"])
+  resource_group_name = azurerm_resource_group.KFNetworkRsg.name
+  location            = var.location
+
+  security_rule {
+    name                         = "IN-AKS-AKS"
+    priority                     = 1000
+    direction                    = "Inbound"
+    access                       = "Allow"
+    protocol                     = "*"
+    source_port_range            = "*"
+    destination_port_range       = "*"
+    source_address_prefixes      = [var.KFS_subnet_address_space_aks, var.aks_service_cidr]
+    destination_address_prefixes = [var.KFS_subnet_address_space_aks, var.aks_service_cidr]
+  }
+  security_rule {
+    name                       = "IN-AGW-AKS"
+    priority                   = 1010
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_ranges    = ["80", "443", "8080", "8443"]
+    source_address_prefix      = var.KFS_subnet_address_space_agw
+    destination_address_prefix = var.KFS_subnet_address_space_aks
+  }
+  security_rule {
+    name                       = "IN-OPS-AKS"
+    priority                   = 1020
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_ranges    = ["6443", "2379-2380", "10250", "10259", "10257"]
+    source_address_prefix      = var.KFS_subnet_address_space_ops
+    destination_address_prefix = var.KFS_subnet_address_space_aks
+  }
+  security_rule {
+    name                         = "Out-AKS-AKS"
+    priority                     = 1000
+    direction                    = "Outbound"
+    access                       = "Allow"
+    protocol                     = "*"
+    source_port_range            = "*"
+    destination_port_range       = "*"
+    source_address_prefixes      = [var.KFS_subnet_address_space_aks, var.aks_service_cidr]
+    destination_address_prefixes = [var.KFS_subnet_address_space_aks, var.aks_service_cidr]
+  }
+  security_rule {
+    name                       = "Out-AKS-Paas"
+    priority                   = 1010
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_ranges    = ["443", "8443", "379", "6380", "8500", "10221-10231", "6443", "5432", "5671"]
+    source_address_prefix      = var.KFS_subnet_address_space_aks
+    destination_address_prefix = var.KFS_subnet_address_space_paas
+  }
+
+
+  tags = {
+
+    "ResourceType (new)"    = "Networking"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+}
+
+
+resource "azurerm_network_security_group" "KFOPSNSG" {
+  name                = join("-", [local.resource_prefix, "nsg-ops"])
+  resource_group_name = azurerm_resource_group.KFNetworkRsg.name
+  location            = var.location
+  security_rule {
+    name                       = "IN-TEMP-BASTION"
+    priority                   = 100
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "22"
+    source_address_prefix      = var.AzureBastionSubnet_address_space
+    destination_address_prefix = "*"
+  }
+  security_rule {
+    name                       = "out_ops_aks"
+    priority                   = 1000
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_ranges    = ["6443", "2379-2380", "10250", "10259", "10257"]
+    source_address_prefix      = var.KFS_subnet_address_space_ops
+    destination_address_prefix = var.KFS_subnet_address_space_aks
+  }
+  security_rule {
+    name                       = "out_ops_pass"
+    priority                   = 1010
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_ranges    = ["443", "8443", "379", "6380", "8500", "10221-10231", "6443", "5432"]
+    source_address_prefix      = var.KFS_subnet_address_space_ops
+    destination_address_prefix = var.KFS_subnet_address_space_paas
+  }
+
+  tags = {
+
+    "ResourceType (new)"    = "Networking"
+    "environment"           = var.environment_name
+
+  }
+}
+
+resource "azurerm_network_security_group" "KFAPGNSG" {
+  name                = join("-", [local.resource_prefix, "nsg-agw"])
+  resource_group_name = azurerm_resource_group.KFNetworkRsg.name
+  location            = var.location
+  security_rule {
+    name                       = "Application_gateway"
+    priority                   = 100
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "65200-65535"
+    source_address_prefix      = "GatewayManager"
+    destination_address_prefix = "*"
+  }
+  tags = {
+
+    "ResourceType (new)"    = "Networking"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+}
+
+
+resource "azurerm_subnet_network_security_group_association" "nsgakssubnet" {
+  subnet_id                 = azurerm_subnet.aks_sbnt.id
+  network_security_group_id = azurerm_network_security_group.KFAKSNSG.id
+}
+
+
+resource "azurerm_subnet_network_security_group_association" "nsgopssubnet" {
+  subnet_id                 = azurerm_subnet.ops_sbnt.id
+  network_security_group_id = azurerm_network_security_group.KFOPSNSG.id
+}
+
+resource "azurerm_subnet_network_security_group_association" "nsgapgsubnet" {
+  subnet_id                 = azurerm_subnet.apg_sbnt.id
+  network_security_group_id = azurerm_network_security_group.KFAPGNSG.id
+}
+
+resource "azurerm_route_table" "route-aks" {
+  name                = join("-", [local.resource_prefix, "route-aks"])
+  resource_group_name = azurerm_resource_group.KFNetworkRsg.name
+  location            = var.location
+  /*
+  route {
+    name = "10-NET"
+    address_prefix = "10.0.0.0/8"
+    next_hop_type = "VirtualAppliance"
+    next_hop_in_ip_address = "10.70.40.102"
+    }
+    route {
+    name = "172-NET"
+    address_prefix = "172.16.0.0/12"
+    next_hop_type = "VirtualAppliance"
+    next_hop_in_ip_address = "10.70.40.102"
+    }
+    route {
+    name = "KF-USE-Transit-VNET"
+    address_prefix = "10.70.40.0/21"
+    next_hop_type = "VirtualAppliance"
+    next_hop_in_ip_address = "10.70.40.102"
+    }
+    route {
+    name = "LOCAL-AKS"
+    address_prefix = "192.168.0.0/16"
+    next_hop_type = "VnetLocal"
+    }
+    route {
+    name = "LOCAL-AKS-2"
+    address_prefix = "172.17.0.0/16"
+    next_hop_type = "VnetLocal"
+    }
+    route {
+    name = "USE-FW-FTDV-01-INSIDE"
+    address_prefix = "10.70.40.100/32"
+    next_hop_type = "VirtualAppliance"
+    next_hop_in_ip_address = "10.70.40.100"
+    }
+    route {
+    name = "USE-FW-FTDV-02-INSIDE"
+    address_prefix = "10.70.40.101/32"
+    next_hop_type = "VirtualAppliance"
+    next_hop_in_ip_address = "10.70.40.101"
+    }*/
+}
+
+
+resource "azurerm_route_table" "route-agw" {
+  name                = join("-", [local.resource_prefix, "route-agw"])
+  resource_group_name = azurerm_resource_group.KFNetworkRsg.name
+  location            = var.location
+  /* route {
+    name = "10-NET"
+    address_prefix = "10.0.0.0/8"
+    next_hop_type = "VirtualAppliance"
+    next_hop_in_ip_address = "10.70.40.102"
+    }
+    route {
+    name = "172-NET"
+    address_prefix = "172.16.0.0/12"
+    next_hop_type = "VirtualAppliance"
+    next_hop_in_ip_address = "10.70.40.102"
+    }
+    route {
+    name = "DEFAULT"
+    address_prefix = "0.0.0.0/0"
+    next_hop_type = "Internet"
+    }
+    route {
+    name = "KF-USE-Transit-VNET"
+    address_prefix = "10.70.40.0/21"
+    next_hop_type = "VirtualAppliance"
+    next_hop_in_ip_address = "10.70.40.102"
+    }
+    route {
+    name = "USE-FW-FTDV-01-INSIDE"
+    address_prefix = "10.70.40.100/32"
+    next_hop_type = "VirtualAppliance"
+    next_hop_in_ip_address = "10.70.40.100"
+    }
+    route {
+    name = "USE-FW-FTDV-02-INSIDE"
+    address_prefix = "10.70.40.101/32"
+    next_hop_type = "VirtualAppliance"
+    next_hop_in_ip_address = "10.70.40.101"
+    }*/
+}
+
+
+resource "azurerm_route_table" "route-ops-paas" {
+  name                = join("-", [local.resource_prefix, "route-op"])
+  resource_group_name = azurerm_resource_group.KFNetworkRsg.name
+  location            = var.location
+  /*  route {
+    name = "10-NET"
+    address_prefix = "10.0.0.0/8"
+    next_hop_type = "VirtualAppliance"
+    next_hop_in_ip_address = "10.70.40.102"
+    }
+    route {
+    name = "172-NET"
+    address_prefix = "172.16.0.0/12"
+    next_hop_type = "VirtualAppliance"
+    next_hop_in_ip_address = "10.70.40.102"
+    }
+    route {
+    name = "DEFAULT-FW"
+    address_prefix = "0.0.0.0/0"
+    next_hop_type = "VirtualAppliance"
+    next_hop_in_ip_address = "10.70.40.102"
+    }
+    route {
+    name = "KF-USE-Transit-VNET"
+    address_prefix = "10.70.40.0/21"
+    next_hop_type = "VirtualAppliance"
+    next_hop_in_ip_address = "10.70.40.102"
+    }
+    route {
+    name = "USE-FW-FTDV-01-INSIDE"
+    address_prefix = "10.70.40.100/32"
+    next_hop_type = "VirtualAppliance"
+    next_hop_in_ip_address = "10.70.40.100"
+    }
+    route {
+    name = "USE-FW-FTDV-02-INSIDE"
+    address_prefix = "10.70.40.101/32"
+    next_hop_type = "VirtualAppliance"
+    next_hop_in_ip_address = "10.70.40.101"
+    }*/
+}
+
+
+resource "azurerm_subnet_route_table_association" "routeaks" {
+  subnet_id      = azurerm_subnet.aks_sbnt.id
+  route_table_id = azurerm_route_table.route-aks.id
+}
+resource "azurerm_subnet_route_table_association" "routepaas" {
+  subnet_id      = azurerm_subnet.paas_sbnt.id
+  route_table_id = azurerm_route_table.route-ops-paas.id
+}
+resource "azurerm_subnet_route_table_association" "routeops" {
+  subnet_id      = azurerm_subnet.ops_sbnt.id
+  route_table_id = azurerm_route_table.route-ops-paas.id
+}
+
+
+resource "azurerm_subnet_route_table_association" "routeagw" {
+  subnet_id      = azurerm_subnet.apg_sbnt.id
+  route_table_id = azurerm_route_table.route-agw.id
+}
+
+
+
+
+#=========================
+#=========================
+#=========================
+
+# Paas Resources
+
+#=========================
+#=========================
+#=========================
+
+
+data "azurerm_client_config" "current" {
+}
+
+output "account_id" {
+  value = data.azurerm_client_config.current.client_id
+}
+
+
+resource "azurerm_storage_account" "STORAGE-STATIC-WEB-SUP" {
+  name                      = join("", [var.org, var.environment_name, var.reg, var.dom, "stgsup"])
+  resource_group_name       = azurerm_resource_group.Rg_paas.name
+  location                  = var.location
+  account_tier              = "Standard"
+  account_replication_type  = "ZRS"
+  #allow_blob_public_access  = "false"
+  allow_nested_items_to_be_public  = "false"
+  shared_access_key_enabled = true
+  tags = {
+
+    "ResourceType (new)"    = "Storage"
+    "environment"           = var.environment_name
+
+  }
+  network_rules {
+    default_action             = "Deny"
+    virtual_network_subnet_ids = [azurerm_subnet.aks_sbnt.id, azurerm_subnet.paas_sbnt.id, azurerm_subnet.ops_sbnt.id, azurerm_subnet.apg_sbnt.id]
+    bypass                     = ["AzureServices"]
+    ip_rules                   = ["147.243.0.0/16"]
+  }
+  lifecycle {
+    prevent_destroy = false
+  }
+  static_website {
+    index_document = "index.html"
+  }
+}
+
+resource "azurerm_cdn_profile" "CDN-PROFILE1" {
+  location            = var.location
+  name                = join("-", [local.resource_prefix, "cp-sup"])
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  sku                 = "Standard_Microsoft"
+  tags = {
+
+    "ResourceType (new)"    = "networking"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+}
+
+resource "azurerm_cdn_endpoint" "cdn-endpoint1" {
+  location = var.location
+  name = join("-", [
+    local.resource_prefix,
+  "ep-support"])
+  profile_name        = azurerm_cdn_profile.CDN-PROFILE1.name
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  origin {
+    host_name = azurerm_storage_account.STORAGE-STATIC-WEB-SUP.primary_web_host
+    name      = "client-management"
+  }
+
+
+  delivery_rule {
+    name  = "clientsURLRouting"
+    order = 1
+    url_file_extension_condition {
+      match_values = [
+      "1"]
+      operator = "LessThan"
+    }
+    url_rewrite_action {
+      destination             = "/index.html"
+      source_pattern          = "/"
+      preserve_unmatched_path = false
+    }
+  }
+
+}
+
+resource "azurerm_storage_account" "STORAGE-STATIC-WEB-RULE" {
+  name                      = join("", [var.org, var.environment_name, var.reg, var.dom, "stgrul"])
+  resource_group_name       = azurerm_resource_group.Rg_paas.name
+  location                  = var.location
+  account_tier              = "Standard"
+  account_replication_type  = "ZRS"
+  #allow_blob_public_access  = "false"
+  allow_nested_items_to_be_public  = "false"
+  shared_access_key_enabled = true
+  tags = {
+
+    "ResourceType (new)"    = "Storage"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+  network_rules {
+    default_action             = "Deny"
+    virtual_network_subnet_ids = [azurerm_subnet.aks_sbnt.id, azurerm_subnet.paas_sbnt.id, azurerm_subnet.ops_sbnt.id, azurerm_subnet.apg_sbnt.id]
+    bypass                     = ["AzureServices"]
+    ip_rules                   = ["147.243.0.0/16"]
+  }
+  lifecycle {
+    prevent_destroy = false
+  }
+  static_website {
+    index_document = "index.html"
+  }
+}
+
+resource "azurerm_cdn_profile" "CDN-PROFILE2" {
+  location            = var.location
+  name                = join("-", [local.resource_prefix, "cp-rule"])
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  sku                 = "Standard_Microsoft"
+  tags = {
+
+    "ResourceType (new)"    = "networking"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+    "Cost Center"           = "US21GPS"
+
+  }
+}
+resource "azurerm_cdn_endpoint" "cdn-endpoint2" {
+  location            = var.location
+  name                = join("-", [local.resource_prefix, "ep-rule"])
+  profile_name        = azurerm_cdn_profile.CDN-PROFILE2.name
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  origin {
+    host_name = azurerm_storage_account.STORAGE-STATIC-WEB-RULE.primary_web_host
+    name      = "client-management"
+  }
+  delivery_rule {
+    name  = "rulesURLrouting"
+    order = 1
+    url_path_condition {
+      match_values = ["rules"]
+      operator     = "Contains"
+      transforms   = ["Lowercase"]
+    }
+    url_file_extension_condition {
+      match_values = ["1"]
+      operator     = "LessThan"
+    }
+    url_rewrite_action {
+      destination             = "/rules/index.html"
+      source_pattern          = "/"
+      preserve_unmatched_path = false
+    }
+  }
+}
+
+
+resource "azurerm_private_endpoint" "kv-cert-endpoint" {
+  depends_on          = [azurerm_key_vault.AKV_Cert]
+  name                = join("-", [local.resource_prefix, "ckv-pe"])
+  location            = var.location
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  subnet_id           = azurerm_subnet.paas_sbnt.id
+  private_service_connection {
+    name                           = join("-", [local.resource_prefix, "ckv-psc"])
+    is_manual_connection           = false
+    private_connection_resource_id = azurerm_key_vault.AKV_Cert.id
+    subresource_names              = ["vault"]
+  }
+  private_dns_zone_group {
+    name                 = join("-", [local.resource_prefix, "ckv-dns-zone"])
+    private_dns_zone_ids = [azurerm_private_dns_zone.prd-dns-akv.id]
+  }
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+}
+
+
+
+
+resource "azurerm_storage_account" "KFSStorageInt" {
+  name                      = join("", [var.org, var.environment_name, var.reg, var.dom, "stgint"])
+  resource_group_name       = azurerm_resource_group.Rg_paas.name
+  location                  = var.location
+  account_tier              = "Standard"
+  account_replication_type  = "ZRS"
+  #allow_blob_public_access  = "false"
+  allow_nested_items_to_be_public  = "false"
+  shared_access_key_enabled = true
+  tags = {
+
+    "ResourceType (new)"    = "Storage"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+
+  network_rules {
+    default_action             = "Deny"
+    virtual_network_subnet_ids = [azurerm_subnet.aks_sbnt.id, azurerm_subnet.paas_sbnt.id, azurerm_subnet.ops_sbnt.id, azurerm_subnet.apg_sbnt.id]
+    bypass                     = ["AzureServices"]
+    ip_rules                   = ["147.243.0.0/16"]
+  }
+  lifecycle {
+    prevent_destroy = false
+  }
+}
+
+resource "azurerm_storage_container" "blob1" {
+  name                  = "bluesheet-history"
+  storage_account_name  = azurerm_storage_account.KFSStorageInt.name
+  container_access_type = "private"
+}
+
+resource "azurerm_storage_container" "blob2" {
+  name                  = "publications"
+  storage_account_name  = azurerm_storage_account.KFSStorageInt.name
+  container_access_type = "private"
+}
+
+resource "azurerm_storage_container" "blob3" {
+  name                  = "rules-statestore"
+  storage_account_name  = azurerm_storage_account.KFSStorageInt.name
+  container_access_type = "private"
+}
+
+resource "azurerm_app_configuration" "app_conf_kfs" {
+  name                = join("-", [local.resource_prefix, "apcng"])
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  location            = var.location
+  sku                 = "standard"
+  tags = {
+
+    "ResourceType (new)"    = "App"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+    "Cost Center"           = "US21GPS"
+
+  }
+}
+
+resource "azurerm_redis_cache" "kfprdredis" {
+  name                = join("-", [local.resource_prefix, "redis"])
+  location            = var.location
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  capacity            = 1
+  family              = "C"
+  sku_name            = "Standard"
+  enable_non_ssl_port = false
+  minimum_tls_version = "1.2"
+  tags = {
+
+    "ResourceType (new)"    = "Database"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+
+  redis_configuration {
+  }
+}
+
+resource "azurerm_log_analytics_workspace" "workspace-ap-OMS" {
+  location            = var.location
+  name                = join("-", [local.resource_prefix, "ap-ay"])
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+    "Cost Center"           = "US21GPS"
+
+  }
+  sku               = "PerGB2018"
+  retention_in_days = 365
+}
+
+resource "azurerm_log_analytics_workspace" "workspace-kv-sbs-OMS" {
+  location            = var.location
+  name                = join("-", [local.resource_prefix, "lg-oms"])
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+  sku               = "PerGB2018"
+  retention_in_days = 365
+}
+
+
+
+
+resource "azurerm_log_analytics_workspace" "workspace-OMS" {
+  location            = var.location
+  name                = join("-", [local.resource_prefix, "lg-ay"])
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+  sku               = "PerGB2018"
+  retention_in_days = 365
+}
+
+
+resource "azurerm_log_analytics_solution" "aks-lgay-sol" {
+  solution_name         = "Containers"
+  location              = var.location
+  resource_group_name   = azurerm_resource_group.Rg_paas.name
+  workspace_resource_id = azurerm_log_analytics_workspace.workspace-OMS.id
+  workspace_name        = azurerm_log_analytics_workspace.workspace-OMS.name
+
+  plan {
+    publisher = "Microsoft"
+    product   = "OMSGallery/Containers"
+  }
+}
+
+
+resource "azurerm_security_center_subscription_pricing" "security-price" {
+  tier          = "Standard"
+  resource_type = "KubernetesService"
+}
+
+# Keyvault
+
+resource "azurerm_key_vault" "AKV_Cert" {
+  location                   = var.location
+  name                       = join("-", [local.resource_prefix, "ky-crt"])
+  resource_group_name        = azurerm_resource_group.Rg_paas.name
+  sku_name                   = "standard"
+  tenant_id                  = data.azurerm_client_config.current.tenant_id
+  soft_delete_retention_days = 90
+  purge_protection_enabled   = true
+
+  network_acls {
+    default_action = "Deny"
+    bypass = "AzureServices"
+    ip_rules = ["147.243.0.0/16"]
+    virtual_network_subnet_ids = [azurerm_subnet.aks_sbnt.id, azurerm_subnet.paas_sbnt.id, azurerm_subnet.ops_sbnt.id, azurerm_subnet.apg_sbnt.id]
+
+  }
+
+  access_policy {
+    object_id               = data.azurerm_client_config.current.object_id
+    tenant_id               = data.azurerm_client_config.current.tenant_id
+   # key_permissions         = ["Get", "List", "Delete"]
+   # secret_permissions      = ["Backup", "Delete", "Get", "List", "Purge", "Recover", "Restore", "Set"]
+    secret_permissions      = ["Get", "List"]
+    certificate_permissions = ["Get", "List"]
+    storage_permissions     = ["Get"]
+  }
+  access_policy {
+    object_id               = azurerm_user_assigned_identity.Usr_identity.principal_id
+    tenant_id               = data.azurerm_client_config.current.tenant_id
+   # key_permissions         = ["Get", "List", "Delete"]
+   # secret_permissions      = ["Backup", "Delete", "Get", "List", "Purge", "Recover", "Restore", "Set"]
+    secret_permissions      = ["Get", "List"]
+    certificate_permissions = ["Get", "List"]
+    storage_permissions     = ["Get"]
+  }
+  # Frontdoor access on Keyvault
+   access_policy {
+     certificate_permissions = ["Get", "List"]
+    object_id               = "**********************"
+    tenant_id          =    data.azurerm_client_config.current.tenant_id
+   # key_permissions         = ["Get", "List", "Delete"]
+    secret_permissions      = ["Get", "List"]
+    storage_permissions     = ["Get"]
+}
+  access_policy {
+    object_id               =  "***********************"
+    tenant_id          =    data.azurerm_client_config.current.tenant_id
+    certificate_permissions = ["Get", "List"]
+    #key_permissions         = ["Get", "List"]
+    secret_permissions      = ["Get", "List"]
+    storage_permissions     = ["Get"]
+  }
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+}
+
+
+
+
+resource "azurerm_key_vault" "AKV" {
+  location                   = var.location
+  name                       = join("-", [local.resource_prefix, "kyvlt"])
+  resource_group_name        = azurerm_resource_group.Rg_paas.name
+  sku_name                   = "standard"
+  tenant_id                  = data.azurerm_client_config.current.tenant_id
+  soft_delete_retention_days = 90
+  purge_protection_enabled   = true
+
+  network_acls {
+    # The Default Action to use when no rules match from ip_rules /
+    # virtual_network_subnet_ids. Possible values are Allow and Deny
+    default_action = "Deny"
+
+    # Allows all azure services to acces your keyvault. Can be set to 'None'
+    bypass = "AzureServices"
+
+    # The list of allowed ip addresses.
+    ip_rules = ["147.243.0.0/16"]
+    virtual_network_subnet_ids = [azurerm_subnet.aks_sbnt.id, azurerm_subnet.paas_sbnt.id, azurerm_subnet.ops_sbnt.id, azurerm_subnet.apg_sbnt.id]
+
+  }
+
+  access_policy {
+    object_id               = data.azurerm_client_config.current.object_id
+    tenant_id               = data.azurerm_client_config.current.tenant_id
+    key_permissions         = ["Get", "List", "Delete"]
+    secret_permissions      = ["Backup", "Delete", "Get", "List", "Purge", "Recover", "Restore", "Set"]
+    certificate_permissions = ["Get", "List"]
+    storage_permissions     = ["Get"]
+  }
+  access_policy {
+    object_id               = azurerm_user_assigned_identity.Usr_identity.principal_id
+    tenant_id               = data.azurerm_client_config.current.tenant_id
+    key_permissions         = ["Get", "List", "Delete"]
+    secret_permissions      = ["Backup", "Delete", "Get", "List", "Purge", "Recover", "Restore", "Set"]
+    certificate_permissions = ["Get", "List"]
+    storage_permissions     = ["Get"]
+  }
+ access_policy {
+    object_id               =  "*************************"
+    tenant_id          =    data.azurerm_client_config.current.tenant_id
+    certificate_permissions = ["Get", "List"]
+    #key_permissions         = ["Get", "List"]
+    secret_permissions      = ["Get", "List", "Set"]
+    storage_permissions     = ["Get"]
+  }
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+
+  }
+}
+
+resource "azurerm_cdn_endpoint_custom_domain" "rules_custom_domain" {
+  name            = "**************"
+  cdn_endpoint_id = azurerm_cdn_endpoint.cdn-endpoint2.id
+  host_name       = "********************"
+  #is_http_allowed = false
+
+    user_managed_https {
+    #AKV_Cert.certificate.id
+    key_vault_certificate_id = "********************"
+    tls_version = "TLS12"
+  }
+}
+
+
+resource "azurerm_cdn_endpoint_custom_domain" "support_custom_domain" {
+  name            = "***********"
+  cdn_endpoint_id = azurerm_cdn_endpoint.cdn-endpoint1.id
+  host_name       = "*****************"
+  user_managed_https {
+      key_vault_certificate_id = "*******************"
+              tls_version = "TLS12"
+    }
+}
+
+
+
+resource "azurerm_log_analytics_workspace" "workspace-kv-OMS" {
+  location            = var.location
+  name                = join("-", [local.resource_prefix, "lg-kv-oms"])
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+
+  }
+  sku               = "PerGB2018"
+  retention_in_days = 365
+}
+
+resource "azurerm_monitor_diagnostic_setting" "akv-oms" {
+  name                       = join("-", [local.resource_prefix, "akv-dig"])
+  target_resource_id         = azurerm_key_vault.AKV.id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.workspace-kv-OMS.id
+
+  log {
+    category = "AuditEvent"
+    enabled  = true
+    retention_policy {
+      enabled = true
+      days    = 30
+    }
+  }
+  log {
+    category = "AzurePolicyEvaluationDetails"
+    enabled  = true
+    retention_policy {
+      enabled = true
+      days    = 30
+    }
+  }
+
+  metric {
+    category = "AllMetrics"
+    enabled  = true
+    retention_policy {
+      enabled = true
+      days    = 30
+    }
+  }
+}
+resource "azurerm_log_analytics_workspace" "workspace-sbs-OMS" {
+  location            = var.location
+  name                = join("-", [local.resource_prefix, "sbs-oms"])
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+  sku               = "PerGB2018"
+  retention_in_days = 365
+}
+
+
+
+#======ACR
+
+
+resource "azurerm_container_registry" "acr" {
+  name                = join("", [var.org, var.environment_name, var.reg, var.dom, "acr"])
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  location            = var.location
+  sku                 = "Premium"
+  admin_enabled       = true
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+  network_rule_set {
+    default_action = "Deny"
+
+/*  ip_rule                = [
+         {
+             action = "Allow"
+             ip_range = "0.0.0.0/0"
+             }
+       ]*/
+
+    virtual_network {
+      action    = "Allow"
+      subnet_id = azurerm_subnet.aks_sbnt.id
+    }
+  }
+}
+
+
+##create private dns for acr
+
+resource "azurerm_private_dns_zone" "prd-dns-acr" {
+  name                = "privatelink.azurecr.io"
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+}
+
+
+##link dns with vnet
+
+resource "azurerm_private_dns_zone_virtual_network_link" "aks-acr-vnetlink" {
+  name                  = "aks-acr-vnetlink"
+  resource_group_name   = azurerm_resource_group.Rg_paas.name
+  private_dns_zone_name = azurerm_private_dns_zone.prd-dns-acr.name
+  virtual_network_id    = azurerm_virtual_network.kfsvnet.id
+}
+
+
+resource "azurerm_private_endpoint" "acr-endpoint" {
+  depends_on          = [azurerm_container_registry.acr]
+  name                = join("-", [local.resource_prefix, "acr-pe"])
+  location            = var.location
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  subnet_id           = azurerm_subnet.paas_sbnt.id
+  private_service_connection {
+    name                           = join("-", [local.resource_prefix, "acr-psc"])
+    is_manual_connection           = false
+    private_connection_resource_id = azurerm_container_registry.acr.id
+    subresource_names              = ["registry"]
+  }
+  private_dns_zone_group {
+    name                 = join("-", [local.resource_prefix, "acr-dns-zone"])
+    private_dns_zone_ids = [azurerm_private_dns_zone.prd-dns-acr.id]
+  }
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+}
+
+
+
+resource "azurerm_postgresql_server" "POSTGRES" {
+  location                         = var.location
+  name                             = join("-", [local.resource_prefix, "psql"])
+  resource_group_name              = azurerm_resource_group.Rg_paas.name
+  sku_name                         = "GP_Gen5_4"
+  version                          = "11"
+  administrator_login              = "psqladmin"
+  administrator_login_password     = var.psql_paasword
+  backup_retention_days            = 7
+  auto_grow_enabled                = true
+  public_network_access_enabled    = false
+  ssl_enforcement_enabled          = true
+  ssl_minimal_tls_version_enforced = "TLS1_2"
+  geo_redundant_backup_enabled     = true
+  lifecycle {
+    prevent_destroy = false
+  }
+  tags = {
+
+    "ResourceType (new)"    = "Database"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+  threat_detection_policy {
+    enabled                    = true
+    storage_account_access_key = azurerm_storage_account.KFSStorageInt.primary_access_key
+    storage_endpoint           = azurerm_storage_account.KFSStorageInt.primary_blob_endpoint
+  }
+  depends_on = [azurerm_storage_account.KFSStorageInt]
+}
+
+resource "azurerm_postgresql_firewall_rule" "psql-firewall" {
+  name                = "psql-firewall"
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  server_name         = azurerm_postgresql_server.POSTGRES.name
+
+  end_ip_address   = "0.0.0.0"
+  start_ip_address = "0.0.0.0"
+}
+
+
+resource "azurerm_key_vault_secret" "store_pgsl_password" {
+  key_vault_id = azurerm_key_vault.AKV.id
+  name         = "kf-psql-password"
+  value        = azurerm_postgresql_server.POSTGRES.administrator_login_password
+  depends_on   = [azurerm_key_vault.AKV]
+}
+
+
+resource "azurerm_application_insights" "APPAINSIGHT" {
+  application_type    = "web"
+  location            = var.location
+  name                = join("-", [local.resource_prefix, "app-ins"])
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  disable_ip_masking  = false
+  tags = {
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+  }
+}
+
+output "clientID" {
+  value = azurerm_user_assigned_identity.Usr_identity.client_id
+}
+output "IdentityID" {
+  value = azurerm_user_assigned_identity.Usr_identity.id
+}
+
+output "primary_access_key" {
+  value     = azurerm_redis_cache.kfprdredis.primary_access_key
+  sensitive = true
+}
+
+output "hostname" {
+  value = azurerm_redis_cache.kfprdredis.hostname
+}
+
+output "postgresql_server_id" {
+  value = azurerm_postgresql_server.POSTGRES.id
+}
+##create private dns for service bus
+
+resource "azurerm_private_dns_zone" "prd-dns-servicebus" {
+  name                = "privatelink.servicebus.windows.net"
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  tags = {
+    "Region"                = "East US"
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+  }
+}
+
+##link dns with vnet
+
+resource "azurerm_private_dns_zone_virtual_network_link" "aks-servicebus-vnetlink" {
+  name                  = "aks-servicebus-vnetlink"
+  resource_group_name   = azurerm_resource_group.Rg_paas.name
+  private_dns_zone_name = azurerm_private_dns_zone.prd-dns-servicebus.name
+  virtual_network_id    = azurerm_virtual_network.kfsvnet.id
+}
+
+# =======================
+
+##create private dns
+
+resource "azurerm_private_dns_zone" "prd-dns-redis" {
+  name                = "privatelink.redis.cache.windows.net"
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+}
+
+##link dns with vnet
+
+resource "azurerm_private_dns_zone_virtual_network_link" "aks-redis-vnetlink" {
+  name                  = "aks-redis-vnetlink"
+  resource_group_name   = azurerm_resource_group.Rg_paas.name
+  private_dns_zone_name = azurerm_private_dns_zone.prd-dns-redis.name
+  virtual_network_id    = azurerm_virtual_network.kfsvnet.id
+}
+
+##create private endpoint
+resource "azurerm_private_endpoint" "pep-redis" {
+  name                = join("-", [local.resource_prefix, "redis-pe"])
+  location            = var.location
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  subnet_id           = azurerm_subnet.paas_sbnt.id
+  private_service_connection {
+    is_manual_connection           = false
+    name                           = "REDISLCONN"
+    private_connection_resource_id = azurerm_redis_cache.kfprdredis.id
+    subresource_names              = ["redisCache"]
+  }
+  private_dns_zone_group {
+    name                 = join("-", [local.resource_prefix, "redis-dns-zone"])
+    private_dns_zone_ids = [azurerm_private_dns_zone.prd-dns-redis.id]
+  }
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+    "Cost Center"           = "US21GPS"
+
+  }
+}
+
+##create private dns for postgress
+
+resource "azurerm_private_dns_zone" "prd-dns-psql" {
+  name                = "privatelink.postgres.database.azure.com"
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+    "Cost Center"           = "US21GPS"
+
+  }
+}
+
+##link dns with vnet
+
+resource "azurerm_private_dns_zone_virtual_network_link" "aks-psql-vnetlink" {
+  name                  = "aks-psql-vnetlink"
+  resource_group_name   = azurerm_resource_group.Rg_paas.name
+  private_dns_zone_name = azurerm_private_dns_zone.prd-dns-psql.name
+  virtual_network_id    = azurerm_virtual_network.kfsvnet.id
+}
+
+resource "azurerm_private_endpoint" "PSQLENDPOINT" {
+  location            = var.location
+  name                = join("-", [local.resource_prefix, "aks-psql-pe"])
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+  subnet_id = azurerm_subnet.paas_sbnt.id
+  private_service_connection {
+    is_manual_connection           = false
+    name                           = "PGSQLCONN"
+    private_connection_resource_id = azurerm_postgresql_server.POSTGRES.id
+    subresource_names              = ["postgresqlServer"]
+  }
+  private_dns_zone_group {
+    name                 = join("-", [local.resource_prefix, "psql-dns-zone"])
+    private_dns_zone_ids = [azurerm_private_dns_zone.prd-dns-psql.id]
+  }
+}
+
+##create private dns for config app
+
+resource "azurerm_private_dns_zone" "prd-dns-cnfg" {
+  name                = "privatelink.azconfig.io"
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+}
+##link dns with vnet
+
+
+resource "azurerm_private_dns_zone_virtual_network_link" "aks-cnfg-vnetlink" {
+  name                  = "cnfg-akv-vnetlink"
+  resource_group_name   = azurerm_resource_group.Rg_paas.name
+  private_dns_zone_name = azurerm_private_dns_zone.prd-dns-cnfg.name
+  virtual_network_id    = azurerm_virtual_network.kfsvnet.id
+}
+
+resource "azurerm_private_endpoint" "cnfg-endpoint" {
+  depends_on          = [azurerm_app_configuration.app_conf_kfs]
+  name                = join("-", [local.resource_prefix, "cnfg-pe"])
+  location            = var.location
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  subnet_id           = azurerm_subnet.paas_sbnt.id
+  private_service_connection {
+    name                           = join("-", [local.resource_prefix, "cnfg-psc"])
+    is_manual_connection           = false
+    private_connection_resource_id = azurerm_app_configuration.app_conf_kfs.id
+    subresource_names              = ["configurationStores"]
+  }
+  private_dns_zone_group {
+    name                 = join("-", [local.resource_prefix, "cnfg-dns-zone"])
+    private_dns_zone_ids = [azurerm_private_dns_zone.prd-dns-cnfg.id]
+  }
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+}
+
+##create private dns for keyvault
+
+resource "azurerm_private_dns_zone" "prd-dns-akv" {
+  name                = "privatelink.vaultcore.azure.net"
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+    "Cost Center"           = "US21GPS"
+
+  }
+}
+
+##link dns with vnet
+
+resource "azurerm_private_dns_zone_virtual_network_link" "aks-akv-vnetlink" {
+  name                  = "aks-akv-vnetlink"
+  resource_group_name   = azurerm_resource_group.Rg_paas.name
+  private_dns_zone_name = azurerm_private_dns_zone.prd-dns-akv.name
+  virtual_network_id    = azurerm_virtual_network.kfsvnet.id
+}
+
+
+resource "azurerm_private_endpoint" "kv-endpoint" {
+  depends_on          = [azurerm_key_vault.AKV]
+  name                = join("-", [local.resource_prefix, "kv-pe"])
+  location            = var.location
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  subnet_id           = azurerm_subnet.paas_sbnt.id
+  private_service_connection {
+    name                           = join("-", [local.resource_prefix, "kv-psc"])
+    is_manual_connection           = false
+    private_connection_resource_id = azurerm_key_vault.AKV.id
+    subresource_names              = ["vault"]
+  }
+  private_dns_zone_group {
+    name                 = join("-", [local.resource_prefix, "kv-dns-zone"])
+    private_dns_zone_ids = [azurerm_private_dns_zone.prd-dns-akv.id]
+  }
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+    "Cost Center"           = "US21GPS"
+
+  }
+}
+
+
+resource "azurerm_private_dns_zone" "prd-dns-stg" {
+  name                = "privatelink.blob.core.windows.net"
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+    "Cost Center"           = "US21GPS"
+
+  }
+}
+
+##link dns with vnet
+
+resource "azurerm_private_dns_zone_virtual_network_link" "aks-stg-vnetlink" {
+  name                  = "aks-stg-vnetlink"
+  resource_group_name   = azurerm_resource_group.Rg_paas.name
+  private_dns_zone_name = azurerm_private_dns_zone.prd-dns-stg.name
+  virtual_network_id    = azurerm_virtual_network.kfsvnet.id
+}
+
+resource "azurerm_private_endpoint" "aks-sup-endpoint" {
+  name                = join("-", [local.resource_prefix, "akssup-pe"])
+  location            = var.location
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  subnet_id           = azurerm_subnet.paas_sbnt.id
+
+  private_service_connection {
+    name                           = join("-", [local.resource_prefix, "akssup-ps"])
+    is_manual_connection           = false
+    private_connection_resource_id = azurerm_storage_account.STORAGE-STATIC-WEB-SUP.id
+    subresource_names              = ["blob"]
+  }
+  private_dns_zone_group {
+    name                 = join("-", [local.resource_prefix, "supstg-dns-zone"])
+    private_dns_zone_ids = [azurerm_private_dns_zone.prd-dns-stg.id]
+  }
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+}
+
+resource "azurerm_private_endpoint" "aksrules-ep" {
+  name                = join("-", [local.resource_prefix, "aksrule-pe"])
+  location            = var.location
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  subnet_id           = azurerm_subnet.paas_sbnt.id
+
+  private_service_connection {
+    name                           = join("-", [local.resource_prefix, "aksrule-ps"])
+    is_manual_connection           = false
+    private_connection_resource_id = azurerm_storage_account.STORAGE-STATIC-WEB-RULE.id
+    subresource_names              = ["blob"]
+  }
+  private_dns_zone_group {
+    name                 = join("-", [local.resource_prefix, "rulestg-dns-zone"])
+    private_dns_zone_ids = [azurerm_private_dns_zone.prd-dns-stg.id]
+  }
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+    "Cost Center"           = "US21GPS"
+
+  }
+}
+
+
+resource "azurerm_private_endpoint" "aksint-ep" {
+  name                = join("-", [local.resource_prefix, "aksint-pe"])
+  location            = var.location
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  subnet_id           = azurerm_subnet.paas_sbnt.id
+
+  private_service_connection {
+    name                           = join("-", [local.resource_prefix, "aksint-ps"])
+    is_manual_connection           = false
+    private_connection_resource_id = azurerm_storage_account.KFSStorageInt.id
+    subresource_names              = ["blob"]
+  }
+  private_dns_zone_group {
+    name                 = join("-", [local.resource_prefix, "intstg-dns-zone"])
+    private_dns_zone_ids = [azurerm_private_dns_zone.prd-dns-stg.id]
+  }
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+    "Cost Center"           = "US21GPS"
+
+  }
+}
+
+
+data "azurerm_storage_account" "state_storage" {
+  name                = "kfsprduekfsgtfstate"
+  resource_group_name = "kfs-prd-ue-kfsg-rg-tfs"
+}
+
+output "storage_account_tier" {
+  value = data.azurerm_storage_account.state_storage.account_tier
+}
+
+
+resource "azurerm_private_endpoint" "agent-state-ep" {
+  name                = join("-", [local.resource_prefix, "agstate-pe"])
+  location            = var.location
+  resource_group_name = azurerm_resource_group.Rg_paas.name
+  subnet_id           = azurerm_subnet.ops_sbnt.id
+
+  private_service_connection {
+    name                           = join("-", [local.resource_prefix, "agstate-ps"])
+    is_manual_connection           = false
+    private_connection_resource_id = data.azurerm_storage_account.state_storage.id
+    subresource_names              = ["blob"]
+  }
+  private_dns_zone_group {
+    name                 = join("-", [local.resource_prefix, "agntstg-dns-zone"])
+    private_dns_zone_ids = [azurerm_private_dns_zone.prd-dns-stg.id]
+  }
+  tags = {
+
+    "ResourceType (new)"    = "Security"
+    "environment"           = var.environment_name
+    "Accessability"         = "private"
+
+  }
+}
+
+
+#++++++++++++++++++++++++++++++
+
+# variable file
+
+
+#######################################
+## spn details to be given below :
+#######################################
+
+variable "client_id" {
+  type      = string
+  default   = "**********************"
+  sensitive = true
+}
+
+variable "client_secret" {
+  type      = string
+  default   = "********************"
+  sensitive = true
+}
+
+variable "sub_id" {
+  type      = string
+  default   = "**************"
+  sensitive = true
+}
+
+variable "tenant_id" {
+  type      = string
+  default   = "******************"
+  sensitive = true
+}
+
+#################################################################################################################
+## environment details to be given below : [Organization]-[Environment]-[Region]-[Domain*]-[Type][*Index/purpose]
+#################################################################################################################
+
+
+
+
+
+variable "dom" {
+  type    = string
+  default = "dd"
+}
+
+variable "environment_name" {
+  type    = string
+  default = "nn"
+}
+
+
+variable "org" {
+  type    = string
+  default = "sam"
+}
+
+variable "reg" {
+  type    = string
+  default = "kk"
+}
+
+variable "location" {
+  type    = string
+  default = "east us"
+}
+
+########################################################
+## Vnet address spaces need to be given below
+########################################################
+
+variable "KFS_vnet_address_space_1" {
+  type    = string
+  default = "10.**.***.**/21"
+}
+
+## Subnet address spaces need to be given below :
+
+variable "KFS_subnet_address_space_agw" {
+  type    = string
+  default = "10.**.***.**/24"
+}
+
+variable "KFS_subnet_address_space_aks" {
+  type    = string
+  default = "10.**.**.**/22"
+}
+
+variable "KFS_subnet_address_space_ops" {
+  type    = string
+  default = "10.**.***.**/25"
+}
+
+variable "KFS_subnet_address_space_paas" {
+  type    = string
+  default = "10.**.***.**/23"
+}
+
+variable "AzureBastionSubnet_address_space" {
+  type    = string
+  default = "10.**.***.***/25"
+}
+
+# 10.49.48.0/21	2048	Reserved subnet
+# 10.49.56.0/21	2048	Reserved subnet
+
+
+## Aks Ip ranges need to be given below for AKS creation :
+
+
+variable "aks_service_cidr" {
+  type    = string
+  default = "192.**.**.**/16"
+}
+
+variable "dns_service_ip" {
+  type    = string
+  default = "192.**.**.**"
+}
+
+variable "docker_bridge_cidr" {
+  type    = string
+  default = "172.**.**.**/16"
+}
+
+#################################################################################################################
+## Agent Vm username, password and Private IP (make sure the private IP should be the one from the ops subnet)
+#################################################################################################################
+
+variable "computername" {
+  type = string
+  default = "testsample"
+}
+
+variable "private_ip_address" {
+  type = string
+  default = "10.00.167.**"   # make sure this Ip should be from the same ops subnet range
+}
+
+variable "backupvm" {
+  type = string
+  default = "testbackupvm"
+}
+
+variable "backupvm_private_ip_address" {
+  type = string
+  default = "10.70.167.**"   # make sure this Ip should be from the same ops subnet range
+}
+
+
+
+
+variable "username" {
+  type = string
+  default = "sample"
+}
+
+variable "vm_password" {
+  type = string
+  default = "testing"
+  sensitive = true
+}
+
+
+
+########################################################################
+## AKS Vm size details
+########################################################################
+
+variable "aks_vm_size" {
+  type    = string
+  default = "Standard_D4_v3"
+}
+
+##########################################################
+## Security rules
+##########################################################
+
+variable "IN-AGW-AKS" {
+  type        = list(string)
+  default     = ["443", "8443", "80", "8080"]
+}
+
+variable "IN-OPS-AKS" {
+   type        = list(string)
+  default     = ["6443", "2379-2380", "10250", "10259", "10257"]
+}
+
+variable "Out-AKS-aks" {
+   type        = list(string)
+  default     = ["443", "8443", "379", "6380", "8500", "10221-10231", "6443", "5432" ]
+}
+
+
+variable "Out-AKS-Paas" {
+  type        = list(string)
+  default     = ["443", "8443", "379", "6380", "8500", "10221-10231", "6443", "5432"]
+}
+
+variable "out_ops_aks" {
+   type        = list(string)
+  default     = ["6443", "2379-2380", "10250", "10259", "10257"]
+}
+
+
+variable "out_ops_pass" {
+   type        = list(string)
+  default     = ["443", "8443" ,"379", "6380", "8500", "10221-10231", "6443", "5432"]
+}
+
+
+##########################################################
+## PSQL details need to be given below
+##########################################################
+
+variable "psql_paasword" {
+  type    = string
+  default = "BS)$4a-$f;[+W.TYjrzusH)"
+}
